@@ -45,9 +45,9 @@ button:hover {
 <body>
 <div class="card">
   <h2>Intraday Price & Volume Analyzer</h2>
-  <p>Measures historical open → high opportunity<br>Last 20 trading days</p>
+  <p>Historical Open → High opportunity (20 days)</p>
 
-  <input id="ticker" placeholder="US Stock Ticker (e.g. AAPL)">
+  <input id="ticker" placeholder="US Ticker (AAPL, TSLA)">
   <input id="target" type="number" value="2" step="0.5">
 
   <button onclick="analyze()">Analyze</button>
@@ -55,35 +55,43 @@ button:hover {
   <div id="output"></div>
 
   <div class="small">
-    Historical statistics only. Not investment advice.
+    Statistics only. Not investment advice.
   </div>
 </div>
 
 <script>
 async function analyze(){
-  const tickerInput = document.getElementById("ticker").value.trim().toLowerCase();
+  const ticker = document.getElementById("ticker").value.trim().toLowerCase();
   const targetPct = parseFloat(document.getElementById("target").value) / 100;
   const out = document.getElementById("output");
 
-  if(!tickerInput){
-    alert("Please enter a ticker");
+  if(!ticker){
+    alert("Enter ticker");
     return;
   }
 
-  out.innerHTML = "⏳ Loading historical data...";
+  out.innerHTML = "⏳ Loading data...";
 
   try {
-    const url = `https://stooq.com/q/d/l/?s=${tickerInput}.us&i=d`;
-    const res = await fetch(url);
+    const stooqURL =
+      `https://stooq.com/q/d/l/?s=${ticker}.us&i=d`;
+
+    const proxyURL =
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(stooqURL)}`;
+
+    const res = await fetch(proxyURL);
     const csv = await res.text();
+
+    if(!csv || csv.includes("404")){
+      throw "CSV empty";
+    }
 
     const lines = csv.trim().split("\n");
     if(lines.length < 25){
-      out.innerHTML = "❌ Not enough historical data.";
+      out.innerHTML = "❌ Not enough data.";
       return;
     }
 
-    // Parse CSV
     let rows = lines.slice(1).map(line => {
       const [date, open, high, low, close, volume] = line.split(",");
       return {
@@ -95,41 +103,39 @@ async function analyze(){
 
     rows = rows.slice(-20);
 
+    let wins = [];
     let gains = [];
-    let volumes = [];
-    let winDays = [];
+    let vols = [];
 
     rows.forEach(r => {
       const gain = (r.high - r.open) / r.open;
       gains.push(gain);
-      volumes.push(r.volume);
-      if(gain >= targetPct){
-        winDays.push(r);
-      }
+      vols.push(r.volume);
+      if(gain >= targetPct) wins.push(r);
     });
 
-    const avgGain = gains.reduce((a,b)=>a+b,0)/gains.length * 100;
-    const avgVol = volumes.reduce((a,b)=>a+b,0)/volumes.length;
-    const avgWinVol = winDays.length
-      ? winDays.reduce((a,b)=>a+b.volume,0)/winDays.length
+    const avgGain = gains.reduce((a,b)=>a+b,0)/gains.length*100;
+    const avgVol = vols.reduce((a,b)=>a+b,0)/vols.length;
+    const avgWinVol = wins.length
+      ? wins.reduce((a,b)=>a+b.volume,0)/wins.length
       : 0;
 
-    const lowVolWinDays = winDays.filter(
+    const lowVolWins = wins.filter(
       d => d.volume < avgVol * 0.5
     ).length;
 
-    const pricePass = winDays.length >= 10;
+    const pricePass = wins.length >= 10;
     const volumePass =
       avgWinVol >= avgVol * 0.8 &&
-      lowVolWinDays <= winDays.length * 0.3;
+      lowVolWins <= wins.length * 0.3;
 
     const finalPass = pricePass && volumePass;
 
     out.innerHTML = `
       <hr>
-      <b>${tickerInput.toUpperCase()}</b><br><br>
+      <b>${ticker.toUpperCase()}</b><br><br>
 
-      ≥ ${(targetPct*100).toFixed(1)}% days: ${winDays.length} / ${rows.length}<br>
+      ≥ ${(targetPct*100).toFixed(1)}% days: ${wins.length}/${rows.length}<br>
       Avg intraday gain: ${avgGain.toFixed(2)}%<br><br>
 
       Avg volume (20d): ${Math.round(avgVol).toLocaleString()}<br>
@@ -137,12 +143,13 @@ async function analyze(){
 
       <span class="${finalPass ? 'pass':'fail'}">
       ${finalPass
-        ? '✅ Stable intraday opportunity with volume support'
-        : '❌ Opportunity or volume not consistent'}
+        ? '✅ Consistent intraday opportunity + volume support'
+        : '❌ Not stable or low participation'}
       </span>
     `;
 
   } catch (e) {
+    console.error(e);
     out.innerHTML = "❌ Data fetch failed. Try another ticker.";
   }
 }
