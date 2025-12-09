@@ -2,22 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Intraday Opportunity Analyzer</title>
+<title>Day Trade Discipline Tool</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+
 <style>
 body {
   font-family: Arial, sans-serif;
-  background: #f4f4f4;
+  background: #f2f2f2;
   padding: 20px;
 }
 .card {
-  background: #ffffff;
-  padding: 20px;
-  max-width: 520px;
+  background: #fff;
+  max-width: 600px;
   margin: auto;
+  padding: 20px;
   border-radius: 8px;
-  box-shadow: 0 0 6px rgba(0,0,0,0.1);
+  box-shadow: 0 0 10px rgba(0,0,0,0.1);
 }
+h2 { margin-top: 0; }
 input, button {
   width: 100%;
   padding: 10px;
@@ -29,11 +31,13 @@ button {
   border: none;
   cursor: pointer;
 }
-button:hover {
-  background: #0056b3;
-}
+button:hover { background: #0056b3; }
 .pass { color: green; font-weight: bold; }
 .fail { color: red; font-weight: bold; }
+.score {
+  font-size: 26px;
+  font-weight: bold;
+}
 .small {
   font-size: 12px;
   color: gray;
@@ -43,20 +47,25 @@ button:hover {
 </head>
 
 <body>
+
 <div class="card">
-  <h2>Intraday Price & Volume Analyzer</h2>
-  <p>Historical Open → High opportunity (20 days)</p>
+<h2>📈 Day Trade Discipline Analyzer</h2>
 
-  <input id="ticker" placeholder="US Ticker (AAPL, TSLA)">
-  <input id="target" type="number" value="2" step="0.5">
+<p>
+Evaluates whether a stock has a <b>repeatable open → high edge</b><br>
+based on the last 20 trading days.
+</p>
 
-  <button onclick="analyze()">Analyze</button>
+<input id="ticker" placeholder="US Stock (AAPL, TSLA, NVDA)">
+<input id="target" type="number" value="2" step="0.5">
 
-  <div id="output"></div>
+<button onclick="analyze()">Analyze</button>
 
-  <div class="small">
-    Statistics only. Not investment advice.
-  </div>
+<div id="output"></div>
+
+<div class="small">
+Statistics only. No prediction. Not financial advice.
+</div>
 </div>
 
 <script>
@@ -70,87 +79,103 @@ async function analyze(){
     return;
   }
 
-  out.innerHTML = "⏳ Loading data...";
+  out.innerHTML = "⏳ Loading historical data...";
 
   try {
-    const stooqURL =
-      `https://stooq.com/q/d/l/?s=${ticker}.us&i=d`;
+    const rawURL = `https://stooq.com/q/d/l/?s=${ticker}.us&i=d`;
+    const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(rawURL)}`;
 
-    const proxyURL =
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(stooqURL)}`;
-
-    const res = await fetch(proxyURL);
+    const res = await fetch(url);
     const csv = await res.text();
 
-    if(!csv || csv.includes("404")){
-      throw "CSV empty";
-    }
-
-    const lines = csv.trim().split("\n");
-    if(lines.length < 25){
-      out.innerHTML = "❌ Not enough data.";
+    if(!csv || !csv.includes(",")){
+      out.innerHTML = "❌ Data source returned invalid response.";
       return;
     }
 
-    let rows = lines.slice(1).map(line => {
-      const [date, open, high, low, close, volume] = line.split(",");
-      return {
-        open: parseFloat(open),
-        high: parseFloat(high),
-        volume: parseFloat(volume)
-      };
-    }).filter(r => r.open && r.high && r.volume);
+    const lines = csv.trim().split("\n");
+    if(lines.length < 30){
+      out.innerHTML = "❌ Not enough historical data.";
+      return;
+    }
+
+    let rows = lines.slice(1).map(l => {
+      const p = l.split(",");
+      if(p.length < 6) return null;
+
+      const open = parseFloat(p[1]);
+      const high = parseFloat(p[2]);
+      const volume = parseFloat(p[5]);
+
+      if(!open || !high || !volume) return null;
+      return { open, high, volume };
+    }).filter(Boolean);
+
+    if(rows.length < 20){
+      out.innerHTML = "❌ Insufficient valid trading days.";
+      return;
+    }
 
     rows = rows.slice(-20);
 
-    let wins = [];
+    let wins = 0;
     let gains = [];
     let vols = [];
+    let winVols = [];
 
     rows.forEach(r => {
       const gain = (r.high - r.open) / r.open;
       gains.push(gain);
       vols.push(r.volume);
-      if(gain >= targetPct) wins.push(r);
+      if(gain >= targetPct){
+        wins++;
+        winVols.push(r.volume);
+      }
     });
 
     const avgGain = gains.reduce((a,b)=>a+b,0)/gains.length*100;
     const avgVol = vols.reduce((a,b)=>a+b,0)/vols.length;
-    const avgWinVol = wins.length
-      ? wins.reduce((a,b)=>a+b.volume,0)/wins.length
+    const avgWinVol = winVols.length
+      ? winVols.reduce((a,b)=>a+b,0)/winVols.length
       : 0;
 
-    const lowVolWins = wins.filter(
-      d => d.volume < avgVol * 0.5
-    ).length;
+    // -------- SCORING ----------
+    let score = 0;
 
-    const pricePass = wins.length >= 10;
-    const volumePass =
-      avgWinVol >= avgVol * 0.8 &&
-      lowVolWins <= wins.length * 0.3;
+    score += Math.min(wins * 4, 40);              // consistency
+    score += Math.min(avgGain * 5, 25);           // range
+    score += avgWinVol >= avgVol * 0.8 ? 20 : 0;  // volume confirmation
+    score += avgVol > 1_000_000 ? 15 : 5;          // liquidity
 
-    const finalPass = pricePass && volumePass;
+    score = Math.round(Math.min(score, 100));
+
+    const pass =
+      score >= 70 && wins >= 10;
 
     out.innerHTML = `
-      <hr>
-      <b>${ticker.toUpperCase()}</b><br><br>
+    <hr>
 
-      ≥ ${(targetPct*100).toFixed(1)}% days: ${wins.length}/${rows.length}<br>
-      Avg intraday gain: ${avgGain.toFixed(2)}%<br><br>
+    <b>${ticker.toUpperCase()}</b><br><br>
 
-      Avg volume (20d): ${Math.round(avgVol).toLocaleString()}<br>
-      Avg volume on win days: ${Math.round(avgWinVol).toLocaleString()}<br><br>
+    🎯 Target move: ${(targetPct*100).toFixed(1)}%<br>
+    ✅ Win days: ${wins}/20<br>
+    📈 Avg intraday gain: ${avgGain.toFixed(2)}%<br><br>
 
-      <span class="${finalPass ? 'pass':'fail'}">
-      ${finalPass
-        ? '✅ Consistent intraday opportunity + volume support'
-        : '❌ Not stable or low participation'}
-      </span>
+    📊 Avg volume: ${Math.round(avgVol).toLocaleString()}<br>
+    📊 Win-day volume: ${Math.round(avgWinVol).toLocaleString()}<br><br>
+
+    <div class="score">Score: ${score}/100</div><br>
+
+    <span class="${pass?'pass':'fail'}">
+    ${pass
+      ? "✅ Consistent intraday edge (open → high)"
+      : "❌ Edge not stable or volume weak"}
+    </span>
     `;
-
-  } catch (e) {
+  }
+  catch(e){
     console.error(e);
-    out.innerHTML = "❌ Data fetch failed. Try another ticker.";
+    out.innerHTML = "❌ Network or symbol error.";
   }
 }
 </script>
