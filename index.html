@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Intraday Opportunity Analyzer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background: #f4f4f4;
+  padding: 20px;
+}
+.card {
+  background: #ffffff;
+  padding: 20px;
+  max-width: 520px;
+  margin: auto;
+  border-radius: 8px;
+  box-shadow: 0 0 6px rgba(0,0,0,0.1);
+}
+input, button {
+  width: 100%;
+  padding: 10px;
+  margin-top: 10px;
+}
+button {
+  background: #007bff;
+  color: white;
+  border: none;
+  cursor: pointer;
+}
+button:hover {
+  background: #0056b3;
+}
+.pass { color: green; font-weight: bold; }
+.fail { color: red; font-weight: bold; }
+.small {
+  font-size: 12px;
+  color: gray;
+  margin-top: 15px;
+}
+</style>
+</head>
+
+<body>
+<div class="card">
+  <h2>Intraday Price & Volume Analyzer</h2>
+  <p>Measures historical open → high opportunity<br>Last 20 trading days</p>
+
+  <input id="ticker" placeholder="US Stock Ticker (e.g. AAPL)">
+  <input id="target" type="number" value="2" step="0.5">
+
+  <button onclick="analyze()">Analyze</button>
+
+  <div id="output"></div>
+
+  <div class="small">
+    Historical statistics only. Not investment advice.
+  </div>
+</div>
+
+<script>
+async function analyze(){
+  const tickerInput = document.getElementById("ticker").value.trim().toLowerCase();
+  const targetPct = parseFloat(document.getElementById("target").value) / 100;
+  const out = document.getElementById("output");
+
+  if(!tickerInput){
+    alert("Please enter a ticker");
+    return;
+  }
+
+  out.innerHTML = "⏳ Loading historical data...";
+
+  try {
+    const url = `https://stooq.com/q/d/l/?s=${tickerInput}.us&i=d`;
+    const res = await fetch(url);
+    const csv = await res.text();
+
+    const lines = csv.trim().split("\n");
+    if(lines.length < 25){
+      out.innerHTML = "❌ Not enough historical data.";
+      return;
+    }
+
+    // Parse CSV
+    let rows = lines.slice(1).map(line => {
+      const [date, open, high, low, close, volume] = line.split(",");
+      return {
+        open: parseFloat(open),
+        high: parseFloat(high),
+        volume: parseFloat(volume)
+      };
+    }).filter(r => r.open && r.high && r.volume);
+
+    rows = rows.slice(-20);
+
+    let gains = [];
+    let volumes = [];
+    let winDays = [];
+
+    rows.forEach(r => {
+      const gain = (r.high - r.open) / r.open;
+      gains.push(gain);
+      volumes.push(r.volume);
+      if(gain >= targetPct){
+        winDays.push(r);
+      }
+    });
+
+    const avgGain = gains.reduce((a,b)=>a+b,0)/gains.length * 100;
+    const avgVol = volumes.reduce((a,b)=>a+b,0)/volumes.length;
+    const avgWinVol = winDays.length
+      ? winDays.reduce((a,b)=>a+b.volume,0)/winDays.length
+      : 0;
+
+    const lowVolWinDays = winDays.filter(
+      d => d.volume < avgVol * 0.5
+    ).length;
+
+    const pricePass = winDays.length >= 10;
+    const volumePass =
+      avgWinVol >= avgVol * 0.8 &&
+      lowVolWinDays <= winDays.length * 0.3;
+
+    const finalPass = pricePass && volumePass;
+
+    out.innerHTML = `
+      <hr>
+      <b>${tickerInput.toUpperCase()}</b><br><br>
+
+      ≥ ${(targetPct*100).toFixed(1)}% days: ${winDays.length} / ${rows.length}<br>
+      Avg intraday gain: ${avgGain.toFixed(2)}%<br><br>
+
+      Avg volume (20d): ${Math.round(avgVol).toLocaleString()}<br>
+      Avg volume on win days: ${Math.round(avgWinVol).toLocaleString()}<br><br>
+
+      <span class="${finalPass ? 'pass':'fail'}">
+      ${finalPass
+        ? '✅ Stable intraday opportunity with volume support'
+        : '❌ Opportunity or volume not consistent'}
+      </span>
+    `;
+
+  } catch (e) {
+    out.innerHTML = "❌ Data fetch failed. Try another ticker.";
+  }
+}
+</script>
+</body>
+</html>
